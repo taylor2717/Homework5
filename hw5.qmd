@@ -1,0 +1,324 @@
+---
+title: "hw5"
+format: html
+editor: visual
+---
+
+## Setup
+
+```{r}
+# Core packages
+library(tidyverse)
+library(readr)
+```
+
+# Summarizing Student Data
+
+## Task 1: Read in the Data and Modify
+
+### Read + combine using the code structure provided with the download
+
+```{r}
+# Read raw csvs
+d1=read.table("student/student-mat.csv",sep=";",header=TRUE) 
+d2=read.table("student/student-por.csv",sep=";",header=TRUE) 
+
+# merge the two
+d3=merge(d1,d2,by=c("school","sex","age","address","famsize","Pstatus","Medu","Fedu","Mjob","Fjob","reason","nursery","internet")) 
+
+print(nrow(d3)) # 382 students
+```
+
+### Read + combine using tidyverse (inner_join on the UCI keys)
+
+```{r}
+d1_tidy <- read_delim("student/student-mat.csv", delim = ";")
+d2_tidy <- read_delim("student/student-por.csv", delim = ";")
+
+join_keys <- c("school","sex","age","address","famsize","Pstatus",
+               "Medu","Fedu","Mjob","Fjob","reason","nursery","internet")
+
+d3_tidy <- inner_join(d1, d2, by = join_keys, relationship = "many-to-many")
+
+nrow(d3)
+```
+
+Issues: When I joined the two datasets with inner_join() using the same keys as in their code, I got a warning about a many-to-many relationship. That means the chosen keys don’t uniquely identify each student, so some rows from one file matched multiple rows in the other. Base R’s merge() doesn’t flag this, but dplyr does. This shows the join keys aren’t perfect identifiers and can lead to duplicate matches.
+
+### Combine **excluding** grade/pay/absences fields 
+
+```{r}
+# all keys except G!, G2, G3, paid, absences
+join_keys <- c(
+"school","sex","age","address","famsize","Pstatus",
+"Medu","Fedu","Mjob","Fjob","reason","guardian",
+"traveltime","studytime","failures","schoolsup","famsup",
+"activities","nursery","higher","internet","romantic",
+"famrel","freetime","goout","Dalc","Walc","health"
+)
+
+combined <- inner_join(
+d1_tidy, d2_tidy,
+by = join_keys
+)
+```
+
+### Choose four categorical variables, convert into factor
+
+```{r}
+# Choose four categorical vars and convert to factor in each tibble
+cat_vars <- c("school","sex","address","internet")
+
+
+student_mat <- d1_tidy |> mutate(across(all_of(cat_vars), as.factor))
+student_por <- d2_tidy |> mutate(across(all_of(cat_vars), as.factor))
+combined <- combined |> mutate(across(all_of(cat_vars), as.factor))
+```
+
+## Task 2: Summarize the Data (Very Basic EDA)
+
+### Storage structure & missing values
+
+```{r}
+# Structure
+glimpse(combined)
+
+
+# Missingness by column
+missing_tbl <- combined |>
+summarise(across(everything(), ~ sum(is.na(.)))) |>
+pivot_longer(everything(), names_to = "variable", values_to = "n_missing") |>
+arrange(desc(n_missing))
+
+
+missing_tbl |> head(10)
+```
+
+I checked for missing values and found that the combined dataset doesn’t have any missing entries for the main demographic variables (school, sex, age, etc.). Overall, the dataset looks very complete, with no obvious gaps in the variables I checked.
+
+### Categorical variables 
+
+#### Contingency Tables
+
+```{r}
+# contingency tables
+
+# One-way
+one_way <- table(combined$sex)
+one_way
+
+
+# Two-way
+two_way <- table(combined$sex, combined$internet)
+two_way
+
+
+# Three-way
+three_way <- table(combined$sex, combined$internet, combined$address)
+three_way
+```
+
+One-way table (sex): There are 174 females and 146 males in the combined dataset. Thus, there are slightly more females than males.
+
+Two-way table (sex x internet): A large majority of both males and females have internet at home, though females without internet are slightly more common. For example, 143 females reported having internet at home compared to 129 males.
+
+Three-way table (sex x internet x address): In urban areas, most students report having internet, especially males (108 with vs 6 without).
+
+#### Conditional two‑way tables - two methods
+
+```{r}
+# Method 1: subset first (e.g., address == 'U') then two-way table
+u_subset <- combined |> filter(address == "U")
+cond_two_way_m1 <- table(u_subset$sex, u_subset$internet)
+cond_two_way_m1
+
+
+# Method 2: build three-way then slice the condition from it
+cond_two_way_m2 <- three_way[, , "U"] # same as conditioning on address == 'U'
+cond_two_way_m2
+```
+
+Both methods (filtering vs slicing a three-way table) gave the same result, which confirms the counts are consistent. In urban areas, access to internet is high across both sexes.
+
+#### Dplyr version of two‑way table
+
+```{r}
+library(tidyr)
+
+
+ct_dplyr <- combined |>
+count(sex, internet, name = "n") |>
+pivot_wider(names_from = internet, values_from = n, values_fill = 0)
+ct_dplyr
+```
+
+Produces the same numbers as table(), but in a tidier format that’s easier to reshape or plot.
+
+#### Stacked vs side‑by‑side bar graphs
+
+```{r}
+# Stacked
+combined |>
+ggplot(aes(x = sex, fill = internet)) +
+geom_bar() +
+labs(title = "Internet access by Sex (stacked)", x = "Sex", y = "Count", fill = "Internet")
+
+
+# Side-by-side (dodged)
+combined |>
+ggplot(aes(x = sex, fill = internet)) +
+geom_bar(position = position_dodge()) +
+labs(title = "Internet access by Sex (side-by-side)", x = "Sex", y = "Count", fill = "Internet")
+```
+
+**Stacked:** Shows overall totals by sex with internet stacked on top, but it’s harder to compare the groups.
+
+**Side-by-side:** Makes it clearer that both males and females mostly have internet, but the “no internet” bar is taller for females.
+
+### Numeric Variables
+
+#### Center & Spread
+
+```{r}
+# center and spread for age, absences, and G3
+summary_basic <- combined |>
+summarise(
+age_mean = mean(age, na.rm = TRUE),
+age_sd = sd(age, na.rm = TRUE),
+abs_mean = mean(absences.x, na.rm = TRUE),
+abs_iqr = IQR(absences.x, na.rm = TRUE),
+g3_median = median(G3.x, na.rm = TRUE),
+g3_range = diff(range(G3.x, na.rm = TRUE))
+)
+summary_basic
+```
+
+**Overall:** Average age is \~16.5, with a narrow spread. Median final math grade (G3) is 11 with a range of 20 points.
+
+#### Center/spread across one grouping variable
+
+```{r}
+# center and spread for age, absences and G3 by sex
+by_sex <- combined |>
+group_by(sex) |>
+summarise(
+age_mean = mean(age, na.rm = TRUE),
+abs_median = median(absences.x, na.rm = TRUE),
+g3_mean = mean(G3.x, na.rm = TRUE),
+.groups = "drop"
+)
+by_sex
+```
+
+**By sex:** Mean final grade is slightly higher for males (≈11.8) than females (≈10.4).
+
+### Center/spread across two grouping variables
+
+```{r}
+# center and spread for age, absences, and G3 by internet and sex
+by_sex_internet <- combined |>
+group_by(sex, internet) |>
+summarise(
+age_mean = mean(age, na.rm = TRUE),
+abs_iqr = IQR(absences.x, na.rm = TRUE),
+g3_sd = sd(G3.x, na.rm = TRUE),
+.groups = "drop"
+)
+by_sex_internet
+```
+
+**By sex × internet:** Students with internet access tend to have slightly higher grades and more variation than those without.
+
+#### Correlation matrix
+
+```{r}
+numeric_df <- combined |>
+select(where(is.numeric))
+
+
+cor_mat <- cor(numeric_df, use = "pairwise.complete.obs")
+round(cor_mat, 2)
+```
+
+Strong correlations appear between the different grade variables (G1, G2, G3), which makes sense since they’re all assessments from the same subject. Other numeric variables like absences or alcohol use don’t correlate much with final grade.
+
+## Distribution plots across a categorical variable
+
+```{r}
+# distributions of G3 by internet
+
+
+# Histogram 
+combined |>
+ggplot(aes(x = G3.x, fill = internet)) +
+geom_histogram(position = "identity", alpha = 0.5, bins = 15) +
+labs(title = "Distribution of Final Grade (Math) by Internet Access",
+x = "G3 (Math)", y = "Count", fill = "Internet")
+
+
+# Kernel density
+combined |>
+ggplot(aes(x = G3.x, fill = internet)) +
+geom_density(alpha = 0.4) +
+labs(title = "Kernel Density of G3 (Math) by Internet Access",
+x = "G3 (Math)", y = "Density", fill = "Internet")
+
+
+# Boxplot
+combined |>
+ggplot(aes(x = internet, y = G3.x, fill = internet)) +
+geom_boxplot() +
+labs(title = "Boxplot: G3 (Math) by Internet Access",
+x = "Internet", y = "G3 (Math)", fill = "Internet")
+```
+
+**Histogram & density (G3 by internet):** Both groups peak around 10–15, but students with internet show more higher-end grades.
+
+**Boxplot:** Median G3 is higher for students with internet, and their grade distribution is more spread out.
+
+#### Scatterplots: G3 vs other numeric variables
+
+```{r}
+combined |>
+ggplot(aes(x = absences.x, y = G3.x, color = sex)) +
+geom_jitter(width = 0.2, height = 0.2, alpha = 0.7) +
+labs(title = "G3 (Math) vs Absences by Sex",
+x = "Absences (Math)", y = "G3 (Math)", color = "Sex")
+
+
+combined |>
+ggplot(aes(x = age, y = G3.x, color = internet)) +
+geom_jitter(width = 0.2, height = 0.2, alpha = 0.7) +
+labs(title = "G3 (Math) vs Age by Internet Access",
+x = "Age", y = "G3 (Math)", color = "Internet")
+```
+
+**G3 vs Absences by Sex:** Most students have low absences (clustered near zero). Grades don’t show a clear trend with absences, but very high absences often pair with lower grades. Both sexes follow a similar pattern.
+
+**G3 vs Age by Internet Access:** Grades are mostly between 10–15 across all ages. Internet access doesn’t show a big difference, though students with internet appear more spread out across the grade range.
+
+#### Faceting by one categorical variable
+
+```{r}
+combined |>
+ggplot(aes(x = absences.x, y = G3.x, color = sex)) +
+geom_jitter(width = 0.2, height = 0.2, alpha = 0.7) +
+facet_wrap(~ internet) +
+labs(title = "G3 (Math) vs Absences, Faceted by Internet",
+x = "Absences (Math)", y = "G3 (Math)", color = "Sex")
+```
+
+**G3 vs Absences faceted by Internet:** Within both groups (with and without internet), students with many absences tend to have lower grades. Internet users make up most of the data, and their grades span a wider range.
+
+#### Faceting by two categorical variables
+
+```{r}
+combined |>
+ggplot(aes(x = absences.x, y = G3.x, color = sex)) +
+geom_jitter(width = 0.2, height = 0.2, alpha = 0.7) +
+facet_grid(address ~ internet) +
+labs(title = "G3 (Math) vs Absences, Faceted by Address × Internet",
+x = "Absences (Math)", y = "G3 (Math)", color = "Sex")
+```
+
+**G3 vs Absences faceted by Address × Internet:** Urban students with internet dominate the sample. In each subgroup, the general pattern holds — low absences are associated with higher grades, while high absences are linked with lower performance.
